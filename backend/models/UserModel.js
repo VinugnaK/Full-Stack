@@ -1,41 +1,41 @@
-const { pool } = require('../config/db')
-const bcrypt = require('bcryptjs')
+const db = require('../config/db')
 
-const UserModel = {
-  async create({ name, email, password, work_hours_per_day = 8 }) {
-    const hashed = await bcrypt.hash(password, 12)
-    const [result] = await pool.execute(
-      'INSERT INTO users (name, email, password_hash, work_hours_per_day) VALUES (?, ?, ?, ?)',
-      [name, email, hashed, work_hours_per_day]
+const User = {
+  async findByEmail(email) {
+    const [rows] = await db.query('SELECT * FROM users WHERE email = ?', [email])
+    return rows[0]
+  },
+  async findById(id) {
+    const [rows] = await db.query(
+      'SELECT id, name, email, work_hours_per_day, productivity_goal, preferred_working_time, created_at FROM users WHERE id = ?',
+      [id]
+    )
+    return rows[0]
+  },
+  async create({ name, email, password_hash, work_hours_per_day, productivity_goal, preferred_working_time }) {
+    const [result] = await db.query(
+      `INSERT INTO users (name, email, password_hash, work_hours_per_day, productivity_goal, preferred_working_time)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, email, password_hash, work_hours_per_day || 8, productivity_goal || null, preferred_working_time || null]
     )
     return result.insertId
   },
-
-  async findByEmail(email) {
-    const [rows] = await pool.execute('SELECT * FROM users WHERE email = ?', [email])
-    return rows[0] || null
-  },
-
-  async findById(id) {
-    const [rows] = await pool.execute(
-      'SELECT id, name, email, work_hours_per_day, timezone, created_at FROM users WHERE id = ?',
-      [id]
+  async update(id, { name, work_hours_per_day, productivity_goal, preferred_working_time }) {
+    await db.query(
+      `UPDATE users
+       SET name = ?, work_hours_per_day = ?, productivity_goal = ?, preferred_working_time = ?
+       WHERE id = ?`,
+      [name, work_hours_per_day, productivity_goal || null, preferred_working_time || null, id]
     )
-    return rows[0] || null
   },
-
-  async update(id, fields) {
-    const allowed = ['name', 'work_hours_per_day', 'timezone']
-    const updates = Object.entries(fields).filter(([k]) => allowed.includes(k))
-    if (updates.length === 0) return
-    const setClause = updates.map(([k]) => `${k} = ?`).join(', ')
-    const values = updates.map(([, v]) => v)
-    await pool.execute(`UPDATE users SET ${setClause} WHERE id = ?`, [...values, id])
-  },
-
-  async comparePassword(plain, hash) {
-    return bcrypt.compare(plain, hash)
+  async updatePassword(id, password_hash) {
+    await db.query(
+      `UPDATE users
+       SET password_hash = ?
+       WHERE id = ?`,
+      [password_hash, id]
+    )
   }
 }
 
-module.exports = UserModel
+module.exports = User
