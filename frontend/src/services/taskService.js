@@ -1,43 +1,16 @@
 import api from './api'
 
 export const taskService = {
-  getAll: async (params = {}) => {
-    const res = await api.get('/tasks', { params })
-    return res.data
-  },
-
-  getById: async (id) => {
-    const res = await api.get(`/tasks/${id}`)
-    return res.data
-  },
-
-  create: async (taskData) => {
-    const res = await api.post('/tasks', taskData)
-    return res.data
-  },
-
-  update: async (id, taskData) => {
-    const res = await api.put(`/tasks/${id}`, taskData)
-    return res.data
-  },
-
-  updateProgress: async (id, progress) => {
-    const res = await api.patch(`/tasks/${id}/progress`, { progress })
-    return res.data
-  },
-
-  delete: async (id) => {
-    const res = await api.delete(`/tasks/${id}`)
-    return res.data
-  },
-
-  getAnalytics: async (period = 'weekly') => {
-    const res = await api.get(`/analytics?period=${period}`)
-    return res.data
-  },
-
-  getRisk: async (id) => {
-    const res = await api.get(`/tasks/${id}/risk`)
-    return res.data
-  }
+  getAll:    (params)    => api.get('/tasks', { params }).then(r => r.data),
+  getById:   (id)        => api.get(`/tasks/${id}`).then(r => r.data),
+  create:    (payload)   => api.post('/tasks', payload).then(r => r.data),
+  update:    (id, data)  => api.put(`/tasks/${id}`, data).then(r => r.data),
+  delete:    (id)        => api.delete(`/tasks/${id}`).then(r => r.data),
+  updateProgress: (id, progress) => api.patch(`/tasks/${id}/progress`, { progress }).then(r => r.data),
+  getPrediction:  (id)   => api.get(`/tasks/${id}/prediction`).then(r => r.data),
+  getBreakdown:   (id)   => api.get(`/tasks/${id}/breakdown`).then(r => r.data),
+  getDueReminders: ()    => api.get('/tasks/reminders/due').then(r => r.data),
+  getDeadlineRescue: ()  => api.get('/tasks/deadline-rescue').then(r => r.data),
+  getProcrastinationAlerts: () => api.get('/tasks/procrastination-alerts').then(r => r.data),
+  getPriorityRecommendation: () => api.get('/tasks/priority-recommendation').then(r => r.data),
 }
