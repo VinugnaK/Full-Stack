@@ -1,18 +1,19 @@
-const { pool } = require('../config/db')
+const db = require('../config/db')
 
-const ActivityModel = {
+const Activity = {
+  async log(userId, taskId, action, detail = null) {
+    await db.query(
+      'INSERT INTO activity_logs (user_id, task_id, action, detail) VALUES (?, ?, ?, ?)',
+      [userId, taskId, action, detail]
+    )
+  },
   async getByUser(userId, limit = 20) {
-    const [rows] = await pool.execute(
-      `SELECT a.*, t.title as task_title
-       FROM activity_logs a
-       LEFT JOIN tasks t ON a.task_id = t.id
-       WHERE a.user_id = ?
-       ORDER BY a.created_at DESC
-       LIMIT ?`,
+    const [rows] = await db.query(
+      'SELECT * FROM activity_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
       [userId, limit]
     )
     return rows
   }
 }
 
-module.exports = ActivityModel
+module.exports = Activity

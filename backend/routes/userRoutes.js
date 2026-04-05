@@ -1,9 +1,8 @@
 const router = require('express').Router()
-const { protect } = require('../middleware/authMiddleware')
-const { getProfile, updateProfile } = require('../controllers/userController')
+const ctrl   = require('../controllers/userController')
+const auth   = require('../middleware/authMiddleware')
 
-router.use(protect)
-router.get('/profile', getProfile)
-router.put('/profile', updateProfile)
+router.use(auth)
+router.get('/profile', ctrl.getProfile)
 
 module.exports = router
