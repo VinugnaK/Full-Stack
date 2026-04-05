@@ -1,17 +1,21 @@
 require('dotenv').config()
 const app = require('./app')
-const { testConnection } = require('./config/db')
+const initTeamCollaboration = require('./config/initTeamCollaboration')
+const initTaskEnhancements = require('./config/initTaskEnhancements')
+const initUserPreferences = require('./config/initUserPreferences')
 
 const PORT = process.env.PORT || 5000
 
 async function startServer() {
-  await testConnection()
+  await initTeamCollaboration()
+  await initTaskEnhancements()
+  await initUserPreferences()
   app.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`)
+    console.log(`Backend server running on port ${PORT}`)
   })
 }
 
-startServer().catch((err) => {
-  console.error('❌ Server failed to start:', err)
+startServer().catch(error => {
+  console.error('Failed to initialize backend', error)
   process.exit(1)
 })
