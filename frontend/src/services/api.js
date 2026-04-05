@@ -1,21 +1,22 @@
 import axios from 'axios'
 
+const apiBaseUrl =
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:5000/api`
+
 const api = axios.create({
-  baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' }
+  baseURL: apiBaseUrl,
 })
 
-// Attach JWT token to every request
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(config => {
   const token = localStorage.getItem('token')
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
 
-// Handle 401 globally
 api.interceptors.response.use(
-  (res) => res,
-  (err) => {
+  res => res,
+  err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
