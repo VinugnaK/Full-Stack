@@ -1,106 +1,182 @@
-const { pool } = require('../config/db')
+const db   = require('../config/db')
+const Task = require('../models/taskModel')
+const aiService = require('../services/aiService')
 
-const getAnalytics = async (req, res, next) => {
-  try {
-    const userId = req.user.id
-    const period = req.query.period || 'weekly'
+function getDueAt(task) {
+  if (!task?.deadline) return null
 
-    const now = new Date()
-    let startDate = new Date()
-    let groupBy = 'DATE(t.created_at)'
-    let labelFormat = '%a'
+  const date = new Date(task.deadline)
+  if (Number.isNaN(date.getTime())) return null
 
-    if (period === 'monthly') {
-      startDate.setDate(now.getDate() - 30)
-      groupBy = 'WEEK(t.created_at)'
-      labelFormat = 'Week %u'
-    } else if (period === 'yearly') {
-      startDate.setFullYear(now.getFullYear() - 1)
-      groupBy = 'MONTH(t.created_at)'
-      labelFormat = '%b'
-    } else {
-      startDate.setDate(now.getDate() - 7)
-    }
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const timePart = task.deadline_time ? String(task.deadline_time).slice(0, 8) : '23:59:59'
+  const dueAt = new Date(`${year}-${month}-${day}T${timePart}`)
+  return Number.isNaN(dueAt.getTime()) ? null : dueAt
+}
 
-    const startStr = startDate.toISOString().slice(0, 10)
+function getEffectiveRiskLevel(task) {
+  if (task.status === 'done') return 'LOW'
 
-    const [[totals]] = await pool.execute(
-      `SELECT
-         COUNT(*) as total,
-         SUM(status = 'done') as completed,
-         SUM(status != 'done' AND deadline < NOW()) as overdue,
-         SUM(status != 'done' AND deadline >= NOW()) as active
-       FROM tasks WHERE user_id = ?`,
-      [userId]
-    )
+  const dueAt = getDueAt(task)
+  if (dueAt && dueAt < new Date()) return 'HIGH'
 
-    const productivity_score = totals.total > 0
-      ? Math.round((totals.completed / totals.total) * 100)
-      : 0
+  return task.risk_level || null
+}
 
-    const on_time_rate = totals.completed > 0
-      ? Math.round(((totals.completed - (totals.overdue || 0)) / totals.completed) * 100)
-      : 0
+function isCompletedOnTime(task) {
+  if (task.status !== 'done') return false
 
-    const [chartRows] = await pool.execute(
-      `SELECT
-         DATE_FORMAT(created_at, ?) as name,
-         SUM(status = 'done') as completed,
-         SUM(status != 'done' AND deadline < NOW()) as overdue
-       FROM tasks
-       WHERE user_id = ? AND created_at >= ?
-       GROUP BY ${groupBy}
-       ORDER BY created_at ASC`,
-      [labelFormat, userId, startStr]
-    )
+  const dueAt = getDueAt(task)
+  if (!dueAt) return true
 
-    const [productivityRows] = await pool.execute(
-      `SELECT
-         DATE_FORMAT(created_at, ?) as name,
-         ROUND(SUM(status = 'done') / COUNT(*) * 100) as score,
-         COUNT(*) as tasks
-       FROM tasks
-       WHERE user_id = ? AND created_at >= ?
-       GROUP BY ${groupBy}
-       ORDER BY created_at ASC`,
-      [labelFormat, userId, startStr]
-    )
+  const completedAt = task.updated_at ? new Date(task.updated_at) : null
+  if (!completedAt || Number.isNaN(completedAt.getTime())) return false
 
-    const [riskRows] = await pool.execute(
-      `SELECT r.risk_level as name, COUNT(*) as value
-       FROM task_risk r
-       JOIN tasks t ON t.id = r.task_id
-       WHERE t.user_id = ?
-       GROUP BY r.risk_level`,
-      [userId]
-    )
+  return completedAt <= dueAt
+}
 
-    const insight = generateInsight(totals, productivity_score, period)
+async function getRiskCounts(userId) {
+  const [rows] = await db.query(
+    `SELECT
+       t.id,
+       t.status,
+       t.deadline,
+       t.deadline_time,
+       p.risk_level
+     FROM tasks t
+     LEFT JOIN ai_predictions p ON p.task_id = t.id AND p.id = (
+       SELECT MAX(id) FROM ai_predictions WHERE task_id = t.id
+     )
+     WHERE t.user_id = ?`,
+    [userId]
+  )
 
-    res.json({
-      summary: {
-        total: totals.total,
-        completed: totals.completed,
-        overdue: totals.overdue,
-        active: totals.active,
-        productivity_score,
-        on_time_rate
-      },
-      chart_data: chartRows,
-      productivity_data: productivityRows,
-      risk_distribution: riskRows,
-      insight
-    })
-  } catch (err) {
-    next(err)
+  const counts = { low_risk: 0, medium_risk: 0, high_risk: 0 }
+  rows.forEach((task) => {
+    const level = getEffectiveRiskLevel(task)
+    if (level === 'LOW') counts.low_risk += 1
+    if (level === 'MEDIUM') counts.medium_risk += 1
+    if (level === 'HIGH') counts.high_risk += 1
+  })
+
+  return {
+    low_risk: counts.low_risk,
+    medium_risk: counts.medium_risk,
+    high_risk: counts.high_risk,
   }
 }
 
-function generateInsight(totals, score, period) {
-  if (totals.total === 0) return 'Create your first task to start seeing insights!'
-  if (score >= 80) return `Excellent work this ${period}! You completed ${totals.completed} tasks with a ${score}% productivity score. Keep the momentum going.`
-  if (score >= 50) return `Good progress this ${period}. You have ${totals.overdue || 0} overdue tasks — consider prioritizing them to improve your score.`
-  return `Your productivity score is ${score}% this ${period}. You have ${totals.overdue || 0} overdue tasks. Focus on clearing the backlog before adding new work.`
+async function getProductivityScore(userId) {
+  const [rows] = await db.query(
+    `SELECT
+       t.id,
+       t.status,
+       t.deadline,
+       t.deadline_time,
+       t.updated_at,
+       p.risk_level
+     FROM tasks t
+     LEFT JOIN ai_predictions p ON p.task_id = t.id AND p.id = (
+       SELECT MAX(id) FROM ai_predictions WHERE task_id = t.id
+     )
+     WHERE t.user_id = ?`,
+    [userId]
+  )
+
+  const totalTasks = rows.length
+  if (!totalTasks) return 0
+
+  let completedCount = 0
+  let completedOnTimeCount = 0
+  let overdueCount = 0
+  let highRiskCount = 0
+
+  rows.forEach((task) => {
+    const dueAt = getDueAt(task)
+    const isOverdue = task.status !== 'done' && dueAt && dueAt < new Date()
+    const effectiveRisk = getEffectiveRiskLevel(task)
+
+    if (task.status === 'done') completedCount += 1
+    if (isCompletedOnTime(task)) completedOnTimeCount += 1
+    if (isOverdue) overdueCount += 1
+    if (effectiveRisk === 'HIGH') highRiskCount += 1
+  })
+
+  const completionRate = completedCount / totalTasks
+  const onTimeCompletionRate = completedOnTimeCount / totalTasks
+  const overdueRate = overdueCount / totalTasks
+  const highRiskRate = highRiskCount / totalTasks
+
+  const score =
+    (completionRate * 45) +
+    (onTimeCompletionRate * 30) +
+    ((1 - overdueRate) * 15) +
+    ((1 - highRiskRate) * 10)
+
+  return Math.max(0, Math.min(100, Math.round(score)))
 }
 
-module.exports = { getAnalytics }
+exports.getSummary = async (req, res, next) => {
+  try {
+    const uid = req.user.id
+    const [[totals]] = await db.query(
+      `SELECT
+         COUNT(*) AS total_tasks,
+         SUM(status = 'done') AS completed,
+         SUM(status = 'in_progress') AS in_progress,
+         SUM(status = 'todo') AS todo,
+         SUM(
+           status <> 'done'
+           AND TIMESTAMP(deadline, COALESCE(deadline_time, '23:59:59')) < NOW()
+         ) AS overdue
+       FROM tasks WHERE user_id = ?`, [uid])
+
+    const risks = await getRiskCounts(uid)
+    const productivity_score = await getProductivityScore(uid)
+
+    res.json({ ...totals, ...risks, productivity_score })
+  } catch (err) { next(err) }
+}
+
+exports.getWeekly = async (req, res, next) => {
+  try {
+    const chart    = await Task.getCompletionHistory(req.user.id, 7)
+    const workload = await Task.getUserWorkload(req.user.id)
+    const risks = await getRiskCounts(req.user.id)
+    res.json({ chart, workload, ...risks })
+  } catch (err) { next(err) }
+}
+
+exports.getMonthly = async (req, res, next) => {
+  try {
+    const chart    = await Task.getCompletionHistory(req.user.id, 30)
+    const workload = await Task.getUserWorkload(req.user.id)
+    const risks = await getRiskCounts(req.user.id)
+    res.json({ chart, workload, ...risks })
+  } catch (err) { next(err) }
+}
+
+exports.getYearly = async (req, res, next) => {
+  try {
+    const chart    = await Task.getCompletionHistory(req.user.id, 365)
+    const workload = await Task.getUserWorkload(req.user.id)
+    const risks = await getRiskCounts(req.user.id)
+    res.json({ chart, workload, ...risks })
+  } catch (err) { next(err) }
+}
+
+exports.getBurnout = async (req, res, next) => {
+  try {
+    const result = await aiService.detectBurnout(req.user.id)
+    res.json(result)
+  } catch (err) { next(err) }
+}
+
+exports.getProductivity = async (req, res, next) => {
+  try {
+    const result = await aiService.getProductivityScore(req.user.id)
+    res.json(result)
+  } catch (err) { next(err) }
+}
